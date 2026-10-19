@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #0d0d0d;
+  --muted: #5d5d5d;
+  --subtle: #f4f4f4;
+  --hover: #ececec;
+  --border: #e3e3e3;
+  --sidebar: #f9f9f9;
+  --composer: #ffffff;
+  --focus: #0d0d0d;
+  --link: #0b5cad;
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-hover: var(--hover);
+  --color-border: var(--border);
+  --color-sidebar: var(--sidebar);
+  --color-composer: var(--composer);
+  --color-focus: var(--focus);
+  --color-link: var(--link);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-sans:
+    ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: #212121;
+    --foreground: #ececec;
+    --muted: #b4b4b4;
+    --subtle: #303030;
+    --hover: #3a3a3a;
+    --border: #3d3d3d;
+    --sidebar: #181818;
+    --composer: #303030;
+    --focus: #ececec;
+    --link: #8ab8ff;
+    --danger: #ff8a80;
+    --danger-soft: #3a2422;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}

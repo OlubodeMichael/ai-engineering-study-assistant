@@ -1,363 +1,385 @@
-# AI Engineering Course Companion
+# AI Engineering Study Assistant
 
-An AI engineering study assistant that answers questions using the
+Ask questions about the
 [AI Engineering from Scratch](https://aiengineeringfromscratch.com/)
-curriculum.
+course and get streaming answers grounded in its lessons, with links back
+to the exact lessons each answer draws on.
 
-The application retrieves relevant course passages and uses OpenAI to
-generate streaming answers with numbered source citations.
+![Study assistant home screen](docs/images/study-assistant-home.png)
 
-The FastAPI backend is implemented. A Next.js frontend is planned to
-provide a browser interface for asking questions and exploring sources.
+![Answer with course references](docs/images/study-assistant-answer.png)
 
-## Features
+## What it does
 
-- Search English course lessons across all phases.
-- Ask questions in natural language.
-- Receive answers grounded in retrieved course material.
-- Stream generated answers through Server-Sent Events.
-- See source paths and chunk references for retrieved evidence.
-- Store document embeddings in a persistent Chroma database.
-- Resume interrupted indexing by skipping previously stored chunk IDs.
-- Run the backend and vector database with Docker Compose.
+- **Chat-style study interface.** Ask a question in plain language, or
+  start from a suggested question. Questions from the current session are
+  listed in a collapsible sidebar (a drawer on mobile).
+- **Streaming answers.** Answers appear as they are written, with
+  progress such as "Finding relevant lessons…" and "Writing answer…". You
+  can stop an answer while it streams and retry after errors.
+- **Course references.** Inline citation badges in each answer map to a
+  "Course references" list under it. References show the lesson title and
+  its place in the course (for example, "Phase 11 · LLM Engineering"), and
+  link to the lesson on aiengineeringfromscratch.com.
+- **Readable Markdown.** Answers support lists, tables, and code blocks.
+  Code blocks have a copy button and scroll horizontally. You can also copy
+  a whole answer.
+- **Light and dark themes** that follow your system setting.
 
-## Tech Stack
+Each question is answered independently. The assistant does not use
+earlier questions as context, and session history is cleared when the page
+reloads.
 
-| Component | Technology |
+## How it works
+
+```text
+Browser ──► Next.js (frontend, :3000)
+              │  /api/ask route proxies the request and streams the reply
+              ▼
+            FastAPI (backend, :8000)
+              │  1. embed the question (OpenAI)
+              │  2. find the 5 closest course passages (Chroma)
+              │  3. generate a grounded answer (OpenAI Responses API)
+              ▼
+            Server-Sent Events: sources → text deltas → done
+```
+
+The browser never talks to FastAPI or OpenAI directly. The OpenAI API key
+exists only in the Python backend. The Next.js server reads the backend
+address from the server-only `BACKEND_URL` variable.
+
+### Indexing pipeline
+
+Before the assistant can answer questions, the course must be downloaded
+and indexed once.
+
+1. **Loading** (`app/load_documents.py`). Reads selected Markdown files
+   from `documents/ai-engineering-from-scratch/`:
+
+   ```text
+   README.md
+   ROADMAP.md
+   phases/*/README.md
+   phases/*/*/docs/en.md
+   ```
+
+   This covers the overview, roadmap, phase overviews, and English lesson
+   text. Translations, lesson code, and other repository files are not
+   indexed.
+
+2. **Cleanup.** Decorative HTML `<picture>` blocks are removed. Other HTML
+   and navigation text remains.
+
+3. **Recursive splitting** (`app/chunk_documents.py`). LangChain's
+   `RecursiveCharacterTextSplitter` splits each document with
+   `chunk_size=1500` and `chunk_overlap=200`, measured in characters, not
+   tokens. Each chunk keeps its source path, its position, and a stable ID:
+
+   ```json
+   {
+     "source": "phases/11-llm-engineering/09-function-calling/docs/en.md",
+     "chunk_index": 0,
+     "chunk_id": "phases/11-llm-engineering/09-function-calling/docs/en.md::chunk-0"
+   }
+   ```
+
+4. **Embeddings** (`app/embed_documents.py`). Chunks are embedded with
+   OpenAI `text-embedding-3-small` in batches of 50. The vectors, text,
+   and metadata are stored in the Chroma collection
+   `ai-engineering-course`. Chunks whose IDs are already stored are
+   skipped.
+
+### Answering a question
+
+1. **Retrieval** (`app/retrieval.py`). The question is embedded with the
+   same model, and Chroma returns the five nearest passages.
+2. **Grounded generation** (`app/generate_answer.py`). The question and
+   numbered passages are sent to the model set in `OPENAI_CHAT_MODEL`. The
+   instructions tell the model to answer only from the passages, cite them
+   as `[1]`, `[2]`, …, say when the evidence is insufficient, and treat
+   passages as reference data rather than instructions.
+3. **Streaming** (`app/main.py`). FastAPI streams a `sources` event, then
+   `delta` text fragments, then `done`. If something fails, it sends an
+   `error` event instead.
+4. **Display** (`frontend/`). The frontend parses the stream incrementally
+   and renders Markdown with raw HTML disabled. It groups retrieved
+   passages by lesson, so each lesson gets one reference number. Lesson
+   titles come from the course's own headings (stored in
+   `frontend/src/features/chat/data/courseTitles.json`), not from the model.
+   Links are built only from validated relative course paths. English
+   lessons link to `https://aiengineeringfromscratch.com/lesson?path=…`;
+   other documents link to the course's GitHub repository.
+
+The instructions encourage grounded answers, but claims and citations are
+not checked automatically.
+
+## Tech stack
+
+| Area | Technology |
 | --- | --- |
-| Frontend — planned | Next.js, React, TypeScript |
-| API | FastAPI |
-| Language | Python |
-| Answer generation | OpenAI Responses API |
+| Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4 |
+| Markdown | react-markdown, remark-gfm |
+| Frontend tests | Vitest |
+| API | FastAPI (Python 3.12) |
+| Answer generation | OpenAI Responses API (model set by `OPENAI_CHAT_MODEL`) |
 | Embeddings | OpenAI `text-embedding-3-small` |
 | Vector database | Chroma |
-| Document splitting | LangChain RecursiveCharacterTextSplitter |
-| Dependency management | uv |
-| Containers | Docker and Docker Compose |
+| Document splitting | LangChain `RecursiveCharacterTextSplitter` |
+| Python dependencies | uv |
+| Containers | Docker and Docker Compose (API and Chroma) |
 
-## How the Application Works
-
-The application has two main workflows: indexing the curriculum and
-answering questions.
-
-### 1. Document loading
-
-The loader reads selected Markdown files from the downloaded course
-repository:
-
-- The main `README.md`.
-- `ROADMAP.md`.
-- Phase overview files.
-- English lesson documents.
-
-The current selection patterns are:
+## Repository structure
 
 ```text
-README.md
-ROADMAP.md
-phases/*/README.md
-phases/*/*/docs/en.md
-```
+app/                         FastAPI backend and indexing scripts
+├── main.py                  API: GET /health, POST /ask
+├── load_documents.py        Course file selection and cleanup
+├── chunk_documents.py       Recursive splitting and chunk IDs
+├── embed_documents.py       Embedding and resumable indexing into Chroma
+├── retrieval.py             Question embedding and nearest-passage search
+└── generate_answer.py       Grounded answer generation as SSE events
 
-This covers lessons across the curriculum, but does not index every file
-in the upstream repository. Translations, implementation code, and
-separate project directories are not included by these patterns.
-
-Each loaded document contains its text and its relative source path.
-
-Decorative HTML `<picture>` blocks are removed before splitting.
-Other HTML and navigation content may remain.
-
-### 2. Document chunking
-
-Documents are split using LangChain's
-`RecursiveCharacterTextSplitter` with:
-
-```python
-chunk_size=1500
-chunk_overlap=200
-length_function=len
-```
-
-These settings measure characters, not tokens.
-
-Overlap preserves some context between neighboring chunks. Each chunk
-also retains metadata:
-
-```json
-{
-  "source": "phases/11-llm-engineering/09-function-calling/docs/en.md",
-  "chunk_index": 0,
-  "chunk_id": "phases/11-llm-engineering/09-function-calling/docs/en.md::chunk-0"
-}
-```
-
-Chunk IDs combine the document path with its position within that
-document. Adding an unrelated document does not renumber existing
-documents' chunks.
-
-### 3. Embedding and storage
-
-Chunk text is sent to OpenAI using `text-embedding-3-small`.
-
-The resulting vectors are stored in the Chroma collection
-`ai-engineering-course`, together with:
-
-- Chunk text.
-- Source metadata.
-- Chunk ID.
-
-The indexing script processes batches of 50 and checks which IDs are
-already stored before requesting new embeddings.
-
-An initial development run indexed 6,474 chunks. Your count may differ
-depending on the course revision and preprocessing.
-
-### 4. Retrieval
-
-When a user submits a question:
-
-1. The question is embedded with the same embedding model.
-2. Chroma searches for nearby document vectors.
-3. The application retrieves the five closest passages.
-4. Each passage receives a citation number.
-
-Retrieval can be tested independently from answer generation.
-
-### 5. Answer generation
-
-The question and retrieved passages are sent to an OpenAI text model.
-
-The model is instructed to:
-
-- Answer using the supplied passages.
-- Cite supporting passages using markers such as `[1]`.
-- Explain when the evidence is insufficient.
-- Treat retrieved content as reference material rather than instructions.
-
-These instructions encourage grounded answers, but do not automatically
-verify the accuracy of claims or citations.
-
-### 6. Streaming
-
-FastAPI returns Server-Sent Events as the answer is generated.
-
-Clients receive source references first, followed by text fragments and
-a completion event.
-
-The planned Next.js interface will consume this stream and display the
-answer as continuous text.
-
-## Project Structure
-
-```text
-app/
-├── __init__.py
-├── load_documents.py
-├── chunk_documents.py
-├── embed_documents.py
-├── retrieval.py
-├── generate_answer.py
-└── main.py
+frontend/                    Next.js study assistant
+├── src/app/                 Layout, page, and /api/ask proxy route
+├── src/features/ask/        SSE parsing, validation, streaming service
+├── src/features/chat/       Chat UI, citations, course references
+├── src/shared/              Shared buttons, icons, clipboard hook
+├── scripts/generate-course-titles.mjs
+└── .env.example
 
 documents/
-└── ai-engineering-from-scratch/   # Downloaded separately; ignored by Git
+└── ai-engineering-from-scratch/   Course clone (downloaded separately; ignored by Git)
 
-Dockerfile
-compose.yaml
-.dockerignore
-.gitignore
-.env.example
-pyproject.toml
-uv.lock
-README.md
+docs/images/                 README screenshots
+Dockerfile                   Backend API image
+compose.yaml                 API + Chroma services
+.env.example                 Backend environment template
+pyproject.toml, uv.lock      Python dependencies
 ```
 
-The Next.js application has not been added yet.
+## Set up your own copy
 
-## Run Your Own Fork
-
-Forking copies the application source. It does not copy the original
-developer's Docker volume, embeddings, or API credentials.
-
-You will need to download the curriculum and build your own index.
+A fork contains only source code. It does **not** include the original
+Docker volume, the embeddings, or any API credentials. You will download
+the course, start your own Chroma database, and build your own index.
 
 ### Prerequisites
 
-Install:
+- Git
+- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- Node.js 20.9 or later, and npm (required by Next.js 16)
+- Docker with Docker Compose (on macOS, start Docker Desktop first)
+- An OpenAI API key with billing enabled and access to the answer model
+  you choose
 
-- Git.
-- Python 3.12, compatible with the project's `pyproject.toml`.
-- [uv](https://docs.astral.sh/uv/).
-- Docker with Docker Compose.
-
-You also need an OpenAI API key with API billing enabled and access to
-your chosen answer model.
-
-On macOS, start Docker Desktop before running Docker commands.
-
-### 1. Fork and clone
-
-Fork this repository on GitHub, then clone your fork:
+### 1. Clone your fork
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ai-engineering-course-companion.git
-cd ai-engineering-course-companion
+git clone https://github.com/YOUR_USERNAME/ai-engineering-study-assistant.git
+cd ai-engineering-study-assistant
 ```
 
-Replace `YOUR_USERNAME` with your GitHub username. Adjust the repository
-name if you renamed your fork.
+Replace `YOUR_USERNAME`, and adjust the directory name if you renamed the
+fork.
 
-### 2. Install Python dependencies
+### 2. Configure environment variables
 
-```bash
-uv sync --locked
-```
-
-This installs the dependencies recorded in `uv.lock`.
-
-### 3. Configure environment variables
-
-Copy the example configuration:
+Backend (project root):
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-
 ```dotenv
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_CHAT_MODEL=your_available_openai_text_model_id
+OPENAI_API_KEY=your_api_key_here
+OPENAI_CHAT_MODEL=gpt-5-mini
 ```
 
-Replace the placeholders with your own values.
+Frontend:
 
-The embedding model is configured in the Python code. The answer model
-is selected through `OPENAI_CHAT_MODEL`.
+```bash
+cp frontend/.env.example frontend/.env.local
+```
 
-Never commit `.env` or API keys.
+```dotenv
+BACKEND_URL=http://127.0.0.1:8000
+```
 
-### 4. Prepare Docker
+| Variable | File | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `.env` | OpenAI credentials for embeddings and answers. Backend only. |
+| `OPENAI_CHAT_MODEL` | `.env` | Text model used to write answers. Use any model your account can access. |
+| `CHROMA_HOST`, `CHROMA_PORT` | Set by Compose | Where the API finds Chroma. Defaults: `localhost` / `8001`. Compose sets `chroma` / `8000`. |
+| `BACKEND_URL` | `frontend/.env.local` | FastAPI address used by the Next.js server. Defaults to `http://127.0.0.1:8000`. |
 
-The current Compose file uses:
+Never put the OpenAI key in frontend code or in a `NEXT_PUBLIC_` variable.
+`.env` and `frontend/.env.local` are ignored by Git; only the
+`.env.example` files are committed.
 
-- An external volume named `course-chroma-data`.
-- A locally available `chromadb/chroma:latest` image.
-- `pull_policy: never` for the Chroma service.
+### 3. Install dependencies
 
-On a new machine, prepare both:
+```bash
+uv sync --locked
+cd frontend && npm install && cd ..
+```
+
+### 4. Download the course
+
+```bash
+mkdir -p documents
+git clone --depth 1 \
+  https://github.com/rohitg00/ai-engineering-from-scratch.git \
+  documents/ai-engineering-from-scratch
+```
+
+### 5. Prepare Docker and start Chroma
+
+`compose.yaml` uses an **external** volume and sets `pull_policy: never`
+for Chroma, so Compose will not create the volume or download the image
+for you. Do both once per machine:
 
 ```bash
 docker pull chromadb/chroma:latest
 docker volume create course-chroma-data
 ```
 
-Start the services:
+Then start the services:
 
 ```bash
 docker compose up --build -d
-```
-
-This builds the FastAPI image and starts the API and Chroma containers.
-
-Check their status:
-
-```bash
 docker compose ps
 ```
 
-Inspect logs if necessary:
+This builds the API image from `Dockerfile` and starts:
+
+| Service | Address on your machine |
+| --- | --- |
+| FastAPI (`api`) | `http://localhost:8000` |
+| Chroma (`chroma`) | `http://localhost:8001` |
+
+Both ports are bound to `127.0.0.1` only. Chroma stores its data in the
+`course-chroma-data` volume, mounted at `/data`. Compose starts the API
+after the Chroma container starts, but does not wait for Chroma to be
+ready. If the first request fails, wait a moment and retry.
+
+Check Chroma:
 
 ```bash
-docker compose logs api
-docker compose logs chroma
+curl http://localhost:8001/api/v2/heartbeat
 ```
 
-Chroma may need a moment to initialize. The current startup dependency
-orders the services but does not wait for database readiness.
+### 6. Build the index
 
-### 5. Download the curriculum
-
-From the project root:
-
-```bash
-mkdir -p documents
-
-git clone --depth 1 \
-  https://github.com/rohitg00/ai-engineering-from-scratch.git \
-  documents/ai-engineering-from-scratch
-```
-
-The downloaded repository is excluded from this project's Git history.
-
-### 6. Verify document loading
+Optionally preview loading and chunking (no API calls):
 
 ```bash
 uv run python -m app.load_documents
-```
-
-The output reports the document count and sample source paths.
-
-### 7. Verify chunking
-
-```bash
 uv run python -m app.chunk_documents
 ```
 
-Inspect the chunk count, metadata, and text preview.
-
-### 8. Generate and store embeddings
-
-With Chroma running:
+Then embed and store the chunks (this calls OpenAI and costs money):
 
 ```bash
 uv run python -m app.embed_documents
 ```
 
-This sends document text to OpenAI and stores the resulting embeddings
-in Chroma.
+The indexer always connects to Chroma at `localhost:8001` (the Compose
+port mapping). It does not read `CHROMA_HOST` or `CHROMA_PORT`. One
+development run indexed 6,474 chunks. Your count may differ depending on
+the course revision.
 
-Embedding API calls incur charges.
+If indexing is interrupted, run the same command again. Chunks that are
+already stored are skipped.
 
-If indexing is interrupted, rerun the command. Previously stored IDs
-are skipped.
-
-Once indexing finishes, the API can answer questions about the
-curriculum.
-
-### 9. Test retrieval
+Optionally test retrieval on its own:
 
 ```bash
 uv run python -m app.retrieval
 ```
 
-Try:
+### 7. Run the frontend
 
-```text
-How does an agent use tools through function calling?
+```bash
+cd frontend
+npm run dev
 ```
 
-Inspect the returned passages. They should contain information that
-answers the question, rather than merely mentioning similar words.
+Open [http://localhost:3000](http://localhost:3000).
 
-Chroma distances are ranking values, not confidence percentages.
+The frontend is not part of Docker Compose; run it with Node as shown.
+For a production build:
 
-### 10. Test the streaming API
+```bash
+npm run build
+npm run start
+```
 
-Check the API:
+## Running the backend without Docker
+
+To run FastAPI on your machine with auto-reload while keeping Chroma in
+Docker:
+
+```bash
+docker compose stop api
+docker compose up -d chroma
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+When you run it outside Compose, the API uses the default
+`CHROMA_HOST=localhost` and `CHROMA_PORT=8001`.
+
+After changing backend code, rebuild the container:
+
+```bash
+docker compose up --build -d api
+```
+
+Other useful commands:
+
+```bash
+docker compose logs -f api      # follow API logs
+docker compose stop             # stop services
+docker compose down             # remove containers and network (volume is kept)
+```
+
+### Reusing data from a standalone Chroma container
+
+If you previously ran a standalone container named `course-chroma` on the
+same volume, stop it before starting Compose:
+
+```bash
+docker stop course-chroma
+```
+
+Do not run two Chroma containers against the same volume at the same time.
+
+## Example questions
+
+- What is overfitting, and how can I reduce it?
+- How does function calling work?
+- What is the difference between RAG and fine-tuning?
+- How do checkpoints help agents recover from failures?
+- How does an agent use tools through function calling?
+
+## API reference
+
+The frontend calls these endpoints through its `/api/ask` route, but you
+can also call FastAPI directly.
+
+### `GET /health`
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-Expected response:
-
 ```json
 {"status":"ok"}
 ```
 
-Ask a question:
+This only shows that the API is responding. It does not check OpenAI
+access, Chroma, or whether documents are indexed.
+
+### `POST /ask`
 
 ```bash
 curl -N http://localhost:8000/ask \
@@ -365,52 +387,21 @@ curl -N http://localhost:8000/ask \
   -d '{"question":"What is overfitting, and how can I reduce it?"}'
 ```
 
-The `-N` flag disables curl's output buffering so streamed events appear
-as they arrive.
+`-N` turns off curl's buffering so events appear as they arrive. The
+question must contain non-whitespace text and be at most 4,000
+characters; otherwise the API returns `422`.
 
-## API Reference
-
-### `GET /health`
-
-Returns:
-
-```json
-{"status":"ok"}
-```
-
-This checks API responsiveness. It does not verify OpenAI access,
-database readiness, or whether documents have been indexed.
-
-### `POST /ask`
-
-Request:
-
-```json
-{
-  "question": "What is the difference between precision and recall?"
-}
-```
-
-The question must contain non-whitespace text and cannot exceed
-4,000 characters.
-
-Response type:
-
-```text
-text/event-stream
-```
-
-Example events:
+The response is `text/event-stream`:
 
 ```text
 event: sources
 data: {"sources":[{"citation":1,"source":"path/to/lesson/docs/en.md","chunk_id":"path/to/lesson/docs/en.md::chunk-0"}]}
 
 event: delta
-data: {"text":"Precision"}
+data: {"text":"Overfitting"}
 
 event: delta
-data: {"text":" measures..."}
+data: {"text":" happens when..."}
 
 event: done
 data: {}
@@ -418,185 +409,104 @@ data: {}
 
 | Event | Meaning |
 | --- | --- |
-| `sources` | Retrieved source references and citation numbers |
-| `delta` | A fragment to append to the answer |
-| `done` | The server signaled that streaming finished |
-| `error` | Processing failed; stop waiting and show the message |
+| `sources` | Retrieved passages and their citation numbers (includes passages the model may not cite) |
+| `delta` | A text fragment to append; fragments can split words or citation markers |
+| `done` | The answer finished |
+| `error` | Processing failed; `data` contains a short `message` |
 
-Text fragments can split words or citation markers. Join them in order
-without inserting extra spaces.
+Errors that happen after streaming starts arrive as `error` events while
+the HTTP status stays `200`. If nothing is indexed, the stream contains
+only an `error` event with the message "No documents are indexed."
 
-Retrieval happens before answer streaming begins.
+The Next.js route `POST http://localhost:3000/api/ask` accepts the same
+body and passes the stream through unchanged. If FastAPI cannot be
+reached, it returns `502`.
 
-Once streaming starts, errors may arrive as SSE events while the HTTP
-status remains 200. Clients must handle `error` events.
+Interactive API docs are available at
+[http://localhost:8000/docs](http://localhost:8000/docs).
 
-The source list includes all retrieved passages, even those the model
-does not cite.
+## Development checks
 
-Interactive API documentation is available at:
-
-```text
-http://localhost:8000/docs
-```
-
-## Docker Networking and Persistence
-
-| Service | Address from your machine |
-| --- | --- |
-| FastAPI | `http://localhost:8000` |
-| Chroma | `http://localhost:8001` |
-
-Inside Compose, the API connects to Chroma using:
-
-```dotenv
-CHROMA_HOST=chroma
-CHROMA_PORT=8000
-```
-
-Compose supplies these values.
-
-Python scripts running directly on your machine default to:
-
-```dotenv
-CHROMA_HOST=localhost
-CHROMA_PORT=8001
-```
-
-Both `retrieval.py` and `embed_documents.py` use:
-
-```python
-chroma_client = chromadb.HttpClient(
-    host=os.getenv("CHROMA_HOST", "localhost"),
-    port=int(os.getenv("CHROMA_PORT", "8001")),
-)
-```
-
-Chroma data is stored in `course-chroma-data`, mounted at `/data`.
-
-Stopping or recreating containers preserves that volume. Deleting the
-volume removes the stored index.
-
-### Reusing an existing standalone Chroma container's data
-
-If you previously started a container named `course-chroma`, stop it
-before starting Compose:
+From `frontend/`:
 
 ```bash
-docker stop course-chroma
+npm run lint
+npm run typecheck
+npm test
+npm run build
 ```
 
-Compose reuses the existing volume. Do not run both Chroma containers
-against the same volume simultaneously.
+There are frontend unit tests (SSE parsing, streaming, validation,
+citations, course references, links). The Python backend has no automated
+tests yet.
 
-## Development
-
-To run FastAPI locally while keeping Chroma in Docker:
+If you update the course clone, regenerate lesson titles for course
+references:
 
 ```bash
-docker compose stop api
-docker compose up -d chroma
-
-uv run uvicorn app.main:app --reload --port 8000
+cd frontend
+npm run generate:titles
 ```
 
-After editing application code, rebuild the API image when returning to
-Docker:
+## Persistence, costs, and index updates
 
-```bash
-docker compose up --build -d api
-```
+- **Persistence.** The index lives in the local Docker volume
+  `course-chroma-data`. Stopping, recreating, or running
+  `docker compose down` keeps it. Deleting the volume removes it. Pushing
+  to GitHub does not upload embeddings.
+- **Costs.** Indexing embeds every chunk once. Each question costs one
+  embedding call plus one answer-generation call to the model in
+  `OPENAI_CHAT_MODEL`.
+- **Resume.** The indexer skips chunk IDs already in Chroma, so you can
+  safely rerun an interrupted run.
+- **Updates.** Skipping by ID does not detect edited or deleted content.
+  If the course or the chunk settings change, existing IDs may point to
+  outdated text, and old chunks can remain after a document gets shorter.
+  To refresh the index, delete and recreate the volume (or the
+  collection), then index again. Do not mix embeddings from different
+  models in one collection.
 
-Follow logs:
+## Known limitations
 
-```bash
-docker compose logs -f api
-```
-
-Stop services:
-
-```bash
-docker compose stop
-```
-
-Remove Compose containers and the network:
-
-```bash
-docker compose down
-```
-
-The external Chroma volume remains.
-
-## Next.js Frontend — Planned
-
-The frontend will provide:
-
-- A question input.
-- Streaming answer display.
-- Source references associated with citations.
-- Loading, completion, and error states.
-
-The backend is currently usable through HTTP clients and the terminal.
-Frontend installation and development commands will be added once the
-Next.js application is implemented.
-
-## Index Updates and Costs
-
-Document embeddings are generated during indexing. Questions require
-their own embeddings, and answer generation incurs separate usage.
-
-The current indexer skips existing IDs. This supports resuming an
-unchanged indexing run, but does not detect edited or deleted content.
-
-If documents or chunking settings change:
-
-- Existing IDs may refer to changed passages.
-- Old chunks may remain after a document becomes shorter.
-- A deliberate update or rebuild is required.
-
-Do not mix embeddings from different models in the same collection.
-
-The database is local to your Docker installation. Pushing the source
-to GitHub does not upload embeddings.
-
-## Limitations
-
-- No authentication or rate limiting yet.
-- No conversation history or follow-up question rewriting.
-- Basic vector retrieval without hybrid search or reranking.
-- Character-based splitting may cut through diagrams, tables, or code.
-- Source cleanup is basic.
-- Citations are not automatically checked against claims.
-- Answers can inherit inaccuracies from retrieved course material.
-- Index updates do not yet track content hashes or deleted documents.
-- No comprehensive evaluation suite or production load benchmark yet.
-- Docker images currently use mutable tags; pin tested versions or
-  digests for stronger reproducibility.
+- No authentication or rate limiting.
+- No conversation memory; follow-up questions are not rewritten with
+  earlier context.
+- Session history lives only in the browser tab and is lost on reload.
+- Plain vector search (top 5) without hybrid search or reranking.
+- Character-based splitting can cut through tables, diagrams, or code.
+- Source cleanup is basic; some HTML and navigation text is indexed.
+- Citations are not automatically checked against claims, and answers can
+  inherit mistakes from the course material.
+- The indexer's Chroma address is hardcoded to `localhost:8001`.
+- Index updates do not track content hashes or deleted documents.
+- `GET /health` does not check dependencies.
+- The frontend is not containerized, and Docker images use mutable
+  `latest` tags. Pin versions or digests for reproducible builds.
+- No evaluation suite or load testing.
 
 ## Troubleshooting
 
-| Issue | Suggested action |
+| Issue | What to try |
 | --- | --- |
-| Cannot connect to Docker daemon | Start Docker Desktop |
-| External volume missing | Run `docker volume create course-chroma-data` |
-| Chroma image missing | Run `docker pull chromadb/chroma:latest` |
-| Port already allocated | Stop another Chroma or Uvicorn process using that port |
-| Course directory not found | Clone the course into the documented location |
-| Collection missing or empty | Run the embedding script against the correct Chroma instance |
-| API cannot reach Chroma | Check container host `chroma` and internal port `8000` |
-| OpenAI request fails | Check credentials, API billing, model access, and server logs |
-| Updated environment values are ignored | Recreate the API container with `docker compose up -d --force-recreate api` |
-| Output contains many small JSON events | Expected SSE format; a client joins the text fragments |
-| Updated documents are not reflected | Existing-ID skipping does not detect changed content |
+| Cannot connect to the Docker daemon | Start Docker Desktop |
+| `external volume "course-chroma-data" not found` | `docker volume create course-chroma-data` |
+| Chroma image missing | `docker pull chromadb/chroma:latest` |
+| Port already allocated | Stop the other process using port 3000, 8000, or 8001 |
+| `Course directory not found` | Clone the course into `documents/ai-engineering-from-scratch` |
+| "The study assistant is unavailable right now" | Check FastAPI is running and `BACKEND_URL` in `frontend/.env.local` |
+| "Couldn't write an answer right now" on every question | Check `docker compose logs api`. If the stream says "No documents are indexed.", run `uv run python -m app.embed_documents` with Chroma running |
+| API cannot reach Chroma inside Compose | Compose must set `CHROMA_HOST=chroma` and `CHROMA_PORT=8000` |
+| OpenAI request fails | Check your key, billing, model access, and `docker compose logs api` |
+| Changed `.env` values are ignored | `docker compose up -d --force-recreate api` |
+| Updated course content is not reflected | Rebuild the index (see "Index updates") |
 
 ## Attribution
 
-The knowledge source is
-[AI Engineering from Scratch](https://github.com/rohitg00/ai-engineering-from-scratch).
+All course content comes from
+[AI Engineering from Scratch](https://github.com/rohitg00/ai-engineering-from-scratch)
+by Rohit Ghumare, published under the MIT License. Lesson links point to
+[aiengineeringfromscratch.com](https://aiengineeringfromscratch.com/).
 
-This is an independent companion application, not an official course
-product. Preserve upstream licensing and attribution when redistributing
-course materials.
-
-A license for this application's source code should be declared
-separately in a `LICENSE` file.
+This is an independent companion app, not an official course product.
+Keep the upstream license and attribution when redistributing course
+material. This app's own source code does not have a `LICENSE` file yet.
