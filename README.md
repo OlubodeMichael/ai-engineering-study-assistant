@@ -126,7 +126,7 @@ not checked automatically.
 | Vector database | Chroma |
 | Document splitting | LangChain `RecursiveCharacterTextSplitter` |
 | Python dependencies | uv |
-| Containers | Docker and Docker Compose (API and Chroma) |
+| Containers | Docker and Docker Compose (frontend, API, and Chroma) |
 
 ## Repository structure
 
@@ -145,6 +145,7 @@ frontend/                    Next.js study assistant
 ├── src/features/chat/       Chat UI, citations, course references
 ├── src/shared/              Shared buttons, icons, clipboard hook
 ├── scripts/generate-course-titles.mjs
+├── Dockerfile               Frontend image (Next.js standalone server)
 └── .env.example
 
 documents/
@@ -152,7 +153,7 @@ documents/
 
 docs/images/                 README screenshots
 Dockerfile                   Backend API image
-compose.yaml                 API + Chroma services
+compose.yaml                 Frontend + API + Chroma services
 .env.example                 Backend environment template
 pyproject.toml, uv.lock      Python dependencies
 ```
@@ -166,9 +167,10 @@ the course, start your own Chroma database, and build your own index.
 ### Prerequisites
 
 - Git
-- Python 3.12 and [uv](https://docs.astral.sh/uv/)
-- Node.js 20.9 or later, and npm (required by Next.js 16)
+- Python 3.12 and [uv](https://docs.astral.sh/uv/) (to build the index)
 - Docker with Docker Compose (on macOS, start Docker Desktop first)
+- Optional, for frontend development outside Docker: Node.js 20.9 or
+  later and npm (required by Next.js 16)
 - An OpenAI API key with billing enabled and access to the answer model
   you choose
 
@@ -195,7 +197,9 @@ OPENAI_API_KEY=your_api_key_here
 OPENAI_CHAT_MODEL=gpt-5-mini
 ```
 
-Frontend:
+The frontend needs no environment file when it runs in Docker; Compose
+sets `BACKEND_URL` for it. Only if you run the frontend with Node outside
+Docker:
 
 ```bash
 cp frontend/.env.example frontend/.env.local
@@ -210,7 +214,7 @@ BACKEND_URL=http://127.0.0.1:8000
 | `OPENAI_API_KEY` | `.env` | OpenAI credentials for embeddings and answers. Backend only. |
 | `OPENAI_CHAT_MODEL` | `.env` | Text model used to write answers. Use any model your account can access. |
 | `CHROMA_HOST`, `CHROMA_PORT` | Set by Compose | Where the API finds Chroma. Defaults: `localhost` / `8001`. Compose sets `chroma` / `8000`. |
-| `BACKEND_URL` | `frontend/.env.local` | FastAPI address used by the Next.js server. Defaults to `http://127.0.0.1:8000`. |
+| `BACKEND_URL` | Set by Compose, or `frontend/.env.local` | FastAPI address used by the Next.js server. Compose sets `http://api:8000`. Defaults to `http://127.0.0.1:8000`. |
 
 Never put the OpenAI key in frontend code or in a `NEXT_PUBLIC_` variable.
 `.env` and `frontend/.env.local` are ignored by Git; only the
@@ -220,8 +224,10 @@ Never put the OpenAI key in frontend code or in a `NEXT_PUBLIC_` variable.
 
 ```bash
 uv sync --locked
-cd frontend && npm install && cd ..
 ```
+
+The frontend's Node dependencies are installed inside its Docker image.
+Run `cd frontend && npm install` only for local frontend development.
 
 ### 4. Download the course
 
@@ -232,7 +238,7 @@ git clone --depth 1 \
   documents/ai-engineering-from-scratch
 ```
 
-### 5. Prepare Docker and start Chroma
+### 5. Prepare Docker and start the services
 
 `compose.yaml` uses an **external** volume and sets `pull_policy: never`
 for Chroma, so Compose will not create the volume or download the image
@@ -250,17 +256,20 @@ docker compose up --build -d
 docker compose ps
 ```
 
-This builds the API image from `Dockerfile` and starts:
+This builds the API image from `Dockerfile` and the frontend image from
+`frontend/Dockerfile`, then starts:
 
 | Service | Address on your machine |
 | --- | --- |
+| Next.js (`frontend`) | `http://localhost:3000` |
 | FastAPI (`api`) | `http://localhost:8000` |
 | Chroma (`chroma`) | `http://localhost:8001` |
 
-Both ports are bound to `127.0.0.1` only. Chroma stores its data in the
-`course-chroma-data` volume, mounted at `/data`. Compose starts the API
-after the Chroma container starts, but does not wait for Chroma to be
-ready. If the first request fails, wait a moment and retry.
+All ports are bound to `127.0.0.1` only. Inside the Compose network the
+frontend reaches FastAPI at `http://api:8000`. Chroma stores its data in
+the `course-chroma-data` volume, mounted at `/data`. Compose starts each
+service after the one it depends on starts, but does not wait for it to
+be ready. If the first request fails, wait a moment and retry.
 
 Check Chroma:
 
@@ -297,21 +306,27 @@ Optionally test retrieval on its own:
 uv run python -m app.retrieval
 ```
 
-### 7. Run the frontend
+### 7. Open the app
+
+The frontend is already running in Docker. Open
+[http://localhost:3000](http://localhost:3000).
+
+After changing frontend code, rebuild its container:
 
 ```bash
-cd frontend
-npm run dev
+docker compose up --build -d frontend
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+## Running the frontend without Docker
 
-The frontend is not part of Docker Compose; run it with Node as shown.
-For a production build:
+For hot reload during frontend development, stop the frontend container
+and run Next.js with Node (this needs `frontend/.env.local`, see step 2):
 
 ```bash
-npm run build
-npm run start
+docker compose stop frontend
+cd frontend
+npm install
+npm run dev
 ```
 
 ## Running the backend without Docker
@@ -337,7 +352,7 @@ docker compose up --build -d api
 Other useful commands:
 
 ```bash
-docker compose logs -f api      # follow API logs
+docker compose logs -f api      # follow API logs (or frontend)
 docker compose stop             # stop services
 docker compose down             # remove containers and network (volume is kept)
 ```
@@ -480,8 +495,8 @@ npm run generate:titles
 - The indexer's Chroma address is hardcoded to `localhost:8001`.
 - Index updates do not track content hashes or deleted documents.
 - `GET /health` does not check dependencies.
-- The frontend is not containerized, and Docker images use mutable
-  `latest` tags. Pin versions or digests for reproducible builds.
+- Docker images use mutable tags (`latest`, `node:24-alpine`). Pin
+  versions or digests for reproducible builds.
 - No evaluation suite or load testing.
 
 ## Troubleshooting
@@ -493,7 +508,8 @@ npm run generate:titles
 | Chroma image missing | `docker pull chromadb/chroma:latest` |
 | Port already allocated | Stop the other process using port 3000, 8000, or 8001 |
 | `Course directory not found` | Clone the course into `documents/ai-engineering-from-scratch` |
-| "The study assistant is unavailable right now" | Check FastAPI is running and `BACKEND_URL` in `frontend/.env.local` |
+| "The study assistant is unavailable right now" | Check `docker compose ps` shows `api` running. Outside Docker, check `BACKEND_URL` in `frontend/.env.local` |
+| Port 3000 already in use | Stop a local `npm run dev` before starting the `frontend` container |
 | "Couldn't write an answer right now" on every question | Check `docker compose logs api`. If the stream says "No documents are indexed.", run `uv run python -m app.embed_documents` with Chroma running |
 | API cannot reach Chroma inside Compose | Compose must set `CHROMA_HOST=chroma` and `CHROMA_PORT=8000` |
 | OpenAI request fails | Check your key, billing, model access, and `docker compose logs api` |
