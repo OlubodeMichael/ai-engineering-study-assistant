@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+build/
+dist/
+wheels/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environment and secrets
+.venv/
+.env
+.env.*
+!.env.example
+
+# Local database and downloaded course
+chroma_data/
+documents/ai-engineering-from-scratch/
+
+# macOS
+.DS_Store
+
+# Editor and AI tool settings
+.agents/
+.cursor/
+.gemini/
+.vscode/
